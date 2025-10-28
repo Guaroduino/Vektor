@@ -39,10 +39,24 @@ jobs:
       - name: Build
         run: npm run build
 
+      # Debug steps to help confirm the build output in GitHub Actions logs.
+      - name: List workspace root
+        run: ls -la
+
+      - name: List docs folder
+        run: |
+          if [ -d docs ]; then
+            echo "docs found:"; ls -la docs; echo "\nlisting docs assets:"; ls -la docs/assets || true
+          else
+            echo "docs not found"; exit 1
+          fi
+
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: ./dist
+          # Vite is configured to build into `docs` (see vite.config.ts),
+          # so upload that folder instead of `dist`.
+          path: ./docs
 
   deploy:
     needs: build
