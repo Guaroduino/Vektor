@@ -21,6 +21,23 @@
         <label for="simulatePressure">Simulate pressure</label>
         <input id="simulatePressure" type="checkbox" checked />
       </div>
+      <div class="ctrl-row">
+        <label for="color">Color</label>
+        <input id="color" type="color" value="#ffffff" />
+        <span id="colorVal">#FFFFFF</span>
+      </div>
+      <div class="ctrl-row">
+        <button id="clearBtn" type="button">Clear</button>
+      </div>
+      <div class="ctrl-row">
+        <button id="saveBtn" type="button">Save (.vektor)</button>
+        <button id="loadBtn" type="button">Load</button>
+        <input id="loadInput" type="file" accept="application/json,.json,.vektor" style="display:none" />
+      </div>
+      <div class="ctrl-row">
+        <button id="exportPngBtn" type="button">Export PNG</button>
+        <button id="exportJpgBtn" type="button">Export JPG</button>
+      </div>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
