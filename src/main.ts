@@ -10,6 +10,8 @@ import './style.css';
  * Clase principal que inicializa el motor gráfico de Vektor.
  */
 class VektorApp {
+  // Expose app for renderer info overlay
+  static instance: VektorApp | null = null;
   // Types come from Pixi v8; keep annotations lightweight for TS verbatimModuleSyntax
   private app!: InstanceType<typeof Application>;
   private sceneContainer!: Container;
@@ -27,6 +29,8 @@ class VektorApp {
     this.app = new Application();
     this.sceneContainer = new Container();
     this.brushLayer = new Graphics();
+    VektorApp.instance = this;
+    (window as any).__PIXI_APP__ = this.app;
     this.setup();
   }
 
@@ -94,7 +98,13 @@ class VektorApp {
       el.addEventListener('change', update);
     };
     bindRange('size', this.size, (v) => (this.size = Math.max(1, Math.round(v))));
-    bindRange('alpha', this.segmentAlpha, (v) => (this.segmentAlpha = Math.min(1, Math.max(0.05, v))));
+    bindRange('alpha', this.segmentAlpha, (v) => {
+      this.segmentAlpha = Math.min(1, Math.max(0.05, v));
+      // Keep the live preview layer in sync with the selected alpha
+      try {
+        (this.brushLayer as any).alpha = this.segmentAlpha;
+      } catch (e) { /* no-op */ }
+    });
     bindCheckbox('simulatePressure', this.simulatePressure, (v) => (this.simulatePressure = v));
   }
 
@@ -105,6 +115,10 @@ class VektorApp {
   this.hasSegments = false;
   (this.brushLayer as any).clear?.();
     this.prevPoint = this.getPointData(event);
+    // Ensure live preview uses the configured alpha
+    try {
+      (this.brushLayer as any).alpha = this.segmentAlpha;
+    } catch (e) { /* no-op */ }
   };
 
   private handlePointerMove = (event: any) => {
@@ -141,12 +155,13 @@ class VektorApp {
       return;
     }
 
-  const finalStroke = this.brushLayer;
-  (finalStroke as any).alpha = this.segmentAlpha;
-
+    // Commit current preview (which already uses `this.segmentAlpha` as its layer alpha)
+    const finalStroke = this.brushLayer;
     this.sceneContainer.addChild(finalStroke);
 
+    // Create a fresh preview layer and keep its alpha in sync
     this.brushLayer = new Graphics();
+    (this.brushLayer as any).alpha = this.segmentAlpha;
     this.app.stage.addChild(this.brushLayer);
   };
 
@@ -196,19 +211,30 @@ class VektorApp {
       let x: number, y: number;
       let pressure: number;
 
-      // Improved checks for event properties
-    if (event && event.global) {
-      const ev = event;
-      x = ev.global.x;
-      y = ev.global.y;
-      pressure = ev.pressure ?? 0.5;
-      } else if ('x' in event && 'y' in event) {
-          x = event.x;
-          y = event.y;
-          pressure = (event instanceof PointerEvent) ? (event.pressure ?? 0.5) : 0.5;
+      // Prefer Pixi federated event coordinates when available
+      if (event && event.global && typeof event.global.x === 'number') {
+        const ev = event;
+        x = ev.global.x;
+        y = ev.global.y;
+        pressure = (ev.pressure ?? 0.5) as number;
       } else {
-          console.warn("Unexpected event structure in getPointData:", event);
-          x = 0; y = 0; pressure = 0.5; // Default values
+        // Fallback: map native PointerEvent/MouseEvent clientX/clientY to canvas coordinates
+        const native = event as PointerEvent | MouseEvent;
+        const canvas = this.app.canvas as HTMLCanvasElement;
+        const rect = canvas.getBoundingClientRect();
+        const clientX = (native as PointerEvent).clientX ?? (native as MouseEvent).clientX ?? 0;
+        const clientY = (native as PointerEvent).clientY ?? (native as MouseEvent).clientY ?? 0;
+  // Map client coordinates into Pixi's logical renderer coordinates (screen space).
+  // When using `autoDensity` and `resolution > 1`, the canvas backing store
+  // (`canvas.width/height`) is larger than the CSS size. Pixi display
+  // coordinates (and `event.global`) are expressed in logical screen
+  // coordinates (not backing pixels), so we should scale using
+  // `this.app.screen` to remain consistent.
+  const scaleX = (this.app.screen.width) / Math.max(1, rect.width);
+  const scaleY = (this.app.screen.height) / Math.max(1, rect.height);
+  x = (clientX - rect.left) * scaleX;
+  y = (clientY - rect.top) * scaleY;
+        pressure = (native instanceof PointerEvent && typeof native.pressure === 'number') ? native.pressure : 0.5;
       }
 
       return [x, y, pressure];
