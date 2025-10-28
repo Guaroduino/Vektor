@@ -26,3 +26,52 @@ body {
 canvas {
   display: block; /* Elimina espacio extra debajo del canvas */
 }
+
+/* Control panel overlay */
+#controls {
+  position: fixed;
+  top: 10px;
+  left: 10px;
+  width: 280px;
+  max-height: calc(100% - 20px);
+  overflow: auto;
+  padding: 10px 12px;
+  background: rgba(20, 20, 20, 0.85);
+  color: #eee;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  z-index: 10;
+  backdrop-filter: blur(3px);
+}
+
+#controls .ctrl-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+#controls label {
+  grid-column: 1 / -1;
+  font-size: 12px;
+  color: #ccc;
+}
+
+#controls input[type="range"] {
+  grid-column: 1 / 2;
+  width: 100%;
+}
+
+#controls span {
+  grid-column: 2 / 3;
+  font-variant-numeric: tabular-nums;
+  min-width: 36px;
+  text-align: right;
+}
+
+#controls hr {
+  border: none;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  margin: 10px 0;
+}
