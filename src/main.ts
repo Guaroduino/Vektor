@@ -1,5 +1,5 @@
 // VKTOR: vista previa estable sin artefactos
-console.log('--- VektorApp main.ts (preview-graphics) Cargado ---');
+console.log('--- VektorApp main.ts (triangle-brush) Cargado ---');
 
 import {
   Application,
@@ -9,7 +9,6 @@ import {
   extensions
 } from 'pixi.js';
 
-import { getStroke } from 'perfect-freehand';
 import './style.css';
 
 // Registramos plugins
@@ -21,47 +20,23 @@ extensions.add(EventSystem);
  */
 class VektorApp {
   private app: any;
-  private worker: Worker;
-
   private sceneContainer: any;
-  private livePreviewContainer: any;
+  private brushLayer: any;
 
   private isDrawing = false;
-  private currentStrokePoints: number[][] = [];
-  private currentStrokeFallback: any;
-  private activeStrokeContainer: any | null = null;
-  private lastCommittedIndex: number = 0;
-  private segmentLength: number = 24; // puntos por segmento
-  private overlapPoints: number = 8;  // superposición para evitar huecos
-  private segmentAlpha: number = 1.0; // usa <1.0 para acumulación futura
-  // Parámetros de perfect-freehand
-  private size: number = 16;
-  private thinning: number = 0.7;
-  private smoothing: number = 0.5;
-  private streamline: number = 0.5;
-  private simulatePressure: boolean = true;
+  private prevPoint: number[] | null = null; // [x, y, pressure]
+  private carryDistance: number = 0;        // acumulador para espaciar triángulos
 
-  private pendingFrame: boolean = false;
-  private slowIndicatorGraphic: any;
-
-  private RDP_EPS_BASE = 0.5;
+  // Parámetros del pincel de triángulos
+  private size: number = 16;              // tamaño base del triángulo
+  private segmentAlpha: number = 1.0;     // opacidad de las figuras dibujadas
+  private simulatePressure: boolean = true; // usar presión real del stylus
 
   constructor() {
     this.app = new Application();
-    
-    this.worker = new Worker(new URL('./stroke.worker.ts', import.meta.url), {
-      type: 'module'
-    });
-    this.worker.onmessage = this.handleWorkerMessage.bind(this); // .bind() es crucial
 
-  this.sceneContainer = new Graphics();
-  this.livePreviewContainer = new Graphics();
-    
-    this.currentStrokeFallback = new Graphics();
-    this.livePreviewContainer.addChild(this.currentStrokeFallback);
-
-    this.slowIndicatorGraphic = new Graphics();
-    this.slowIndicatorGraphic.visible = false;
+    this.sceneContainer = new Graphics();
+    this.brushLayer = new Graphics();
 
     this.setup();
   }
@@ -91,28 +66,15 @@ class VektorApp {
     this.app.stage.hitArea = this.app.screen;
 
     this.app.stage.addChild(this.sceneContainer);
-    this.app.stage.addChild(this.livePreviewContainer);
-    this.app.stage.addChild(this.slowIndicatorGraphic);
+    this.app.stage.addChild(this.brushLayer);
 
-    // ... (listeners de eventos) ...
     this.app.stage.on('pointerdown', this.handlePointerDown);
     this.app.stage.on('pointermove', this.handlePointerMove);
     this.app.stage.on('pointerup', this.handlePointerUp);
     this.app.stage.on('pointerupoutside', this.handlePointerUp);
 
-  console.log('Vektor Engine Inicializado. Pipeline de dibujo listo (con Worker).');
-  this.setupControls();
-    
-    // ... (listeners de teclado) ...
-    window.addEventListener('keydown', (e) => {
-      if (e.key === ',') {
-        this.RDP_EPS_BASE = Math.max(0.1, this.RDP_EPS_BASE - 0.1);
-        console.log('RDP_EPS_BASE ->', this.RDP_EPS_BASE.toFixed(2));
-      } else if (e.key === '.') {
-        this.RDP_EPS_BASE = this.RDP_EPS_BASE + 0.1;
-        console.log('RDP_EPS_BASE ->', this.RDP_EPS_BASE.toFixed(2));
-      }
-    });
+    console.log('Vektor Engine Inicializado. Modo pincel de triángulos.');
+    this.setupControls();
   }
   
   /**
@@ -143,29 +105,24 @@ class VektorApp {
     };
 
     bindRange('size', this.size, (v) => (this.size = Math.max(1, Math.round(v))));
-    bindRange('thinning', this.thinning, (v) => (this.thinning = Math.min(1, Math.max(0, v))));
-    bindRange('smoothing', this.smoothing, (v) => (this.smoothing = Math.min(1, Math.max(0, v))));
-    bindRange('streamline', this.streamline, (v) => (this.streamline = Math.min(1, Math.max(0, v))));
-
-    bindRange('segmentLength', this.segmentLength, (v) => (this.segmentLength = Math.max(4, Math.round(v))));
-    bindRange('overlap', this.overlapPoints, (v) => (this.overlapPoints = Math.max(0, Math.round(v))));
     bindRange('alpha', this.segmentAlpha, (v) => (this.segmentAlpha = Math.min(1, Math.max(0.05, v))));
-
     bindCheckbox('simulatePressure', this.simulatePressure, (v) => (this.simulatePressure = v));
+
+    // reflejar la opacidad en la capa de pincel
+    const applyAlpha = () => {
+      this.brushLayer.alpha = this.segmentAlpha;
+    };
+    applyAlpha();
+    const alphaEl = document.getElementById('alpha') as HTMLInputElement | null;
+    if (alphaEl) alphaEl.addEventListener('input', applyAlpha);
   }
 
   // --- Manejadores de Eventos (Hilo Principal) ---
 
   private handlePointerDown = (event: any) => {
     this.isDrawing = true;
-    this.currentStrokePoints = [];
-    this.lastCommittedIndex = 0;
-    // Crear contenedor para el trazo activo
-    this.activeStrokeContainer = new Graphics();
-    this.sceneContainer.addChild(this.activeStrokeContainer);
-    const point = this.getPointData(event);
-    this.currentStrokePoints.push(point);
-    this.clearLivePreview();
+    this.prevPoint = this.getPointData(event);
+    this.carryDistance = 0;
   };
 
   private handlePointerMove = (event: any) => {
@@ -176,176 +133,82 @@ class VektorApp {
         ? ((nativeEv as any).getCoalescedEvents() as Array<PointerEvent>)
         : [nativeEv];
     for (const e of coalescedEvents) {
-      const point = this.getPointData(e);
-      this.currentStrokePoints.push(point);
+      const cur = this.getPointData(e);
+      if (!this.prevPoint) {
+        this.prevPoint = cur;
+        continue;
+      }
+      this.drawTrianglesBetween(this.prevPoint, cur);
+      this.prevPoint = cur;
     }
-    // Comprometer segmento si hay puntos suficientes
-    const nextThreshold = this.lastCommittedIndex + this.segmentLength;
-    if (this.currentStrokePoints.length >= nextThreshold) {
-      const start = Math.max(0, this.lastCommittedIndex - this.overlapPoints);
-      const end = nextThreshold;
-      const chunk = this.currentStrokePoints.slice(start, end);
-      const segOptions = {
-        size: this.size,
-        thinning: this.thinning,
-        smoothing: this.smoothing,
-        streamline: this.streamline,
-        simulatePressure: this.simulatePressure
-      } as const;
-      this.worker.postMessage({
-        type: 'segment',
-        points: chunk,
-        options: segOptions,
-        rdpEpsilon: this.RDP_EPS_BASE * (window.devicePixelRatio || 1)
-      });
-      // Avanzamos el índice conservando overlap
-      this.lastCommittedIndex = end - this.overlapPoints;
-    }
-    this.scheduleRenderLiveStroke();
   };
 
   private handlePointerUp = () => {
     if (!this.isDrawing) return;
     this.isDrawing = false;
-    // Enviar el tramo final
-    if (this.currentStrokePoints.length > Math.max(1, this.lastCommittedIndex + 1)) {
-      const start = Math.max(0, this.lastCommittedIndex - this.overlapPoints);
-      const chunk = this.currentStrokePoints.slice(start);
-      this.finalizeStroke(chunk);
-    }
-    this.clearLivePreview();
-    // No limpiamos activeStrokeContainer; queda en la escena como trazo final
-    this.activeStrokeContainer = null;
+    this.prevPoint = null;
+    this.carryDistance = 0;
   };
+  // --- Dibujo del pincel de triángulos ---
 
-  private clearLivePreview() {
-    this.currentStrokeFallback.clear();
+  private drawTrianglesBetween(a: number[], b: number[]) {
+    const ax = a[0], ay = a[1], ap = this.simulatePressure ? a[2] ?? 0.5 : 1.0;
+    const bx = b[0], by = b[1], bp = this.simulatePressure ? b[2] ?? 0.5 : 1.0;
+    let dx = bx - ax;
+    let dy = by - ay;
+    let dist = Math.hypot(dx, dy);
+    if (dist < 0.001) return;
+
+    // dirección normalizada
+    let nx = dx / dist;
+    let ny = dy / dist;
+
+    // espaciar triángulos a un paso basado en tamaño base
+    const step = Math.max(2, this.size * 0.6);
+    let t = this.carryDistance; // avance acumulado desde el último segmento
+
+    while (t <= dist) {
+      const px = ax + nx * t;
+      const py = ay + ny * t;
+      const lerp = t / dist;
+      const press = ap + (bp - ap) * lerp;
+      this.drawTriangle(px, py, nx, ny, press, dist);
+      t += step;
+    }
+
+    // guardar la distancia sobrante para el próximo segmento
+    this.carryDistance = t - dist;
   }
 
-  // --- Lógica de Renderizado (Hilo Principal) ---
+  private drawTriangle(cx: number, cy: number, nx: number, ny: number, pressure: number, segDist: number) {
+    // tamaño influido por "velocidad" (distancia entre muestras) y presión
+    const speedFactor = Math.max(0, Math.min(1, segDist / 20)); // 0..1 aprox
+    const pressFactor = this.simulatePressure ? (0.6 + 1.0 * pressure) : 1.0; // 0.6..1.6
+    const length = Math.max(3, this.size * (0.7 + 0.8 * speedFactor) * pressFactor);
+    const width = Math.max(2, length * 0.6);
 
-  private scheduleRenderLiveStroke = () => {
-    if (this.pendingFrame) return;
-    this.pendingFrame = true;
-    window.requestAnimationFrame(() => {
-      this.pendingFrame = false;
-      this.renderLiveStroke();
-    });
-  };
+    // centro de la base va hacia atrás de la punta
+    const bx = cx - nx * length;
+    const by = cy - ny * length;
+    // vector perpendicular
+    const px = -ny;
+    const py = nx;
+    const halfW = width * 0.5;
 
-  /**
-   * Renderiza la VISTA PREVIA en vivo. (Hot Path)
-   */
-  private renderLiveStroke() {
-    // Opciones de perfect-freehand (coherentes con el worker) desde la UI
-    const options = {
-      size: this.size,
-      thinning: this.thinning,
-      smoothing: this.smoothing,
-      streamline: this.streamline,
-      simulatePressure: this.simulatePressure
-    } as const;
+    const x1 = cx;
+    const y1 = cy; // punta
+    const x2 = bx + px * halfW;
+    const y2 = by + py * halfW;
+    const x3 = bx - px * halfW;
+    const y3 = by - py * halfW;
 
-    // Solo previsualizamos la "cola" para no duplicar lo ya comprometido
-    const previewStart = Math.max(0, this.lastCommittedIndex - this.overlapPoints);
-    const previewPoints = this.currentStrokePoints.slice(previewStart);
-    const strokePolygonPoints = getStroke(previewPoints, options);
-    this.currentStrokeFallback.clear();
-    if (strokePolygonPoints.length === 0) return;
-    this.currentStrokeFallback.beginFill(0xeeeeee);
-    // drawPolygon acepta un array plano [x1,y1,x2,y2,...]
-    this.currentStrokeFallback.drawPolygon(strokePolygonPoints.flat());
-    this.currentStrokeFallback.endFill();
+    this.brushLayer.beginFill(0xeeeeee);
+    this.brushLayer.moveTo(x1, y1);
+    this.brushLayer.lineTo(x2, y2);
+    this.brushLayer.lineTo(x3, y3);
+    this.brushLayer.closePath();
+    this.brushLayer.endFill();
   }
-
-  /**
-   * Envía el trazo al Worker para su finalización. (Cold Path)
-   */
-  private finalizeStroke(chunk: number[][]) {
-    if (this.slowIndicatorGraphic) {
-        this.slowIndicatorGraphic.visible = true;
-    }
-    const options = {
-      size: this.size,
-      thinning: this.thinning,
-      smoothing: this.smoothing,
-      streamline: this.streamline,
-      simulatePressure: this.simulatePressure
-    } as const;
-    this.worker.postMessage({
-      type: 'finalize',
-      points: chunk,
-      options,
-      rdpEpsilon: this.RDP_EPS_BASE * (window.devicePixelRatio || 1)
-    });
-    this.currentStrokePoints = [];
-  }
-
-  /**
-   * Recibe los segmentos renderizados del Worker.
-   */
-  private handleWorkerMessage = (event: MessageEvent) => {
-    if (this.slowIndicatorGraphic) {
-      this.slowIndicatorGraphic.visible = false;
-    }
-    const { type, segments } = event.data as { type: string; segments: any[] };
-    if (type !== 'finalizeComplete' || !segments || segments.length === 0) {
-      // Aceptamos también segmentos incrementales
-      if (type !== 'segmentComplete' || !segments || segments.length === 0) return;
-    }
-
-    // Determinar el contenedor donde dibujar
-    const targetContainer = (type === 'segmentComplete' && this.activeStrokeContainer)
-      ? this.activeStrokeContainer
-      : new Graphics();
-    if (type !== 'segmentComplete') {
-      // Si es un finalize tardío (por seguridad) añadimos a escena
-      this.sceneContainer.addChild(targetContainer);
-    }
-
-    for (const polygon of segments) {
-      const segmentGraphic = new Graphics();
-      // Render final por segmento; base para acumulación futura
-      segmentGraphic.alpha = this.segmentAlpha;
-      segmentGraphic.blendMode = 'normal';
-
-      const outerRing = polygon[0];
-      if (!outerRing || outerRing.length === 0) continue;
-
-      segmentGraphic.beginFill(0xeeeeee); // Tinta blanca/clara
-      // ... (tu código de drawPolygon con beginHole/endHole) ...
-      segmentGraphic.moveTo(outerRing[0][0], outerRing[0][1]);
-      for (let i = 1; i < outerRing.length; i++) {
-        segmentGraphic.lineTo(outerRing[i][0], outerRing[i][1]);
-      }
-      segmentGraphic.closePath();
-      if (polygon.length > 1) {
-        for (let h = 1; h < polygon.length; h++) {
-          const holeRing = polygon[h];
-          if (typeof (segmentGraphic as any).beginHole === 'function') {
-            (segmentGraphic as any).beginHole();
-            segmentGraphic.moveTo(holeRing[0][0], holeRing[0][1]);
-            for (let i = 1; i < holeRing.length; i++) {
-              segmentGraphic.lineTo(holeRing[i][0], holeRing[i][1]);
-            }
-            segmentGraphic.closePath();
-            (segmentGraphic as any).endHole();
-          }
-        }
-      }
-      segmentGraphic.endFill();
-      
-      targetContainer.addChild(segmentGraphic);
-    }
-    // Nada más que hacer; en modo incremental, el contenedor activo ya está en escena
-  };
-
-  /**
-   * Helper rdpSimplify (solo para la vista previa en vivo).
-   */
-  // rdpSimplify eliminado de la vista previa (ya no se usa aquí)
-
-  // Eliminado: previsualización con Mesh; usamos Graphics para evitar artefactos en uniones
 
   /**
    * Helper para extraer y normalizar datos del puntero.

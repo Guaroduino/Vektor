@@ -13,9 +13,6 @@
     "vite": "^7.1.7"
   },
   "dependencies": {
-    "@pixi/mesh-extras": "^7.4.3",
-    "perfect-freehand": "^1.2.2",
-    "pixi.js": "^8.14.0",
-    "polygon-clipping": "^0.15.7"
+    "pixi.js": "^8.14.0"
   }
 }
