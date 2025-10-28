@@ -9,6 +9,7 @@ let dpr = 1;
 let prevPoint: { x: number; y: number; p: number } | null = null;
 let brushSize = 16;
 let brushAlpha = 1;
+let brushColor = '#eeeeee';
 
 function init(off: OffscreenCanvas, w: number, h: number, _dpr: number) {
 	canvas = off;
@@ -58,16 +59,27 @@ function drawTrapezoid(a: { x: number; y: number; p: number }, b: { x: number; y
 	const x4 = bx + px * bWidth;
 	const y4 = by + py * bWidth;
 
+	// Draw two triangles using the OTHER diagonal: (AL, AR, BR) and (AL, BR, BL)
+	ctx.save();
+	ctx.globalAlpha = brushAlpha;
+	ctx.fillStyle = brushColor;
+
+	// Triangle 1: AL, AR, BR
 	ctx.beginPath();
 	ctx.moveTo(x1, y1);
 	ctx.lineTo(x2, y2);
 	ctx.lineTo(x3, y3);
+	ctx.closePath();
+	ctx.fill();
+
+	// Triangle 2: AL, BR, BL
+	ctx.beginPath();
+	ctx.moveTo(x1, y1);
+	ctx.lineTo(x3, y3);
 	ctx.lineTo(x4, y4);
 	ctx.closePath();
-	ctx.save();
-	ctx.globalAlpha = brushAlpha;
-	ctx.fillStyle = '#eeeeee';
 	ctx.fill();
+
 	ctx.restore();
 }
 
@@ -98,6 +110,10 @@ self.onmessage = (ev: MessageEvent) => {
 	if (data.type === 'params') {
 		if (typeof data.size === 'number') brushSize = data.size;
 		if (typeof data.alpha === 'number') brushAlpha = data.alpha;
+		if (typeof data.color === 'string') {
+			brushColor = data.color;
+			if (ctx) ctx.fillStyle = brushColor;
+		}
 		return;
 	}
 
