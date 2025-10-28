@@ -75,6 +75,7 @@ class VektorApp {
   // Brush color (linear in 0..1)
   private colorRGB: [number, number, number] = [1, 1, 1];
   private colorHex: string = '#ffffff';
+  private bgColorHex: string = '#1a1a1a';
 
   constructor() {
     this.app = new Application();
@@ -96,6 +97,9 @@ class VektorApp {
       antialias: true,
       autoDensity: true,
       resolution: window.devicePixelRatio || 1,
+      // Ensure exports via toDataURL/drawImage see the latest pixels
+      // (cast to any to avoid TS complaints in Pixi v8 typings)
+      preserveDrawingBuffer: true as any,
     });
 
     document.body.appendChild(this.app.canvas as HTMLCanvasElement);
@@ -240,6 +244,27 @@ class VektorApp {
       updateBrushColor(this.colorHex);
       colorInput.addEventListener('input', () => updateBrushColor(colorInput.value));
       colorInput.addEventListener('change', () => updateBrushColor(colorInput.value));
+    }
+
+    // Background color picker
+    const bgInput = document.getElementById('bgColor') as HTMLInputElement | null;
+    const bgVal = document.getElementById('bgColorVal') as HTMLElement | null;
+    const setBackground = (hex: string) => {
+      if (!/^#([0-9a-fA-F]{6})$/.test(hex)) return;
+      this.bgColorHex = hex.toLowerCase();
+      const num = parseInt(hex.slice(1), 16);
+      const rAny = (this.app as any).renderer;
+      if (rAny?.background) rAny.background.color = num;
+      else rAny.backgroundColor = num;
+      if (bgVal) bgVal.textContent = hex.toUpperCase();
+      // Re-render to apply immediately
+      if (rAny?.render) rAny.render(this.app.stage);
+    };
+    if (bgInput) {
+      bgInput.value = this.bgColorHex;
+      setBackground(this.bgColorHex);
+      bgInput.addEventListener('input', () => setBackground(bgInput.value));
+      bgInput.addEventListener('change', () => setBackground(bgInput.value));
     }
 
     // Clear button
@@ -527,9 +552,19 @@ class VektorApp {
 
   // --- Export ---
   private exportPNG() {
-    const canvas = this.app.canvas as HTMLCanvasElement;
     try {
-      const url = canvas.toDataURL('image/png');
+      // Ensure latest frame, then use Pixi's extract (works with WebGL/WebGPU)
+      const renderer = (this.app as any).renderer;
+      renderer.render(this.app.stage);
+      const ex = renderer?.extract;
+      let srcCanvas: HTMLCanvasElement = ex?.canvas ? ex.canvas(this.app.stage) : (this.app.canvas as HTMLCanvasElement);
+      // Fallback: copy to a 2D canvas to avoid black frames on some GPUs
+      const out = document.createElement('canvas');
+      out.width = srcCanvas.width;
+      out.height = srcCanvas.height;
+      const ctx = out.getContext('2d');
+      if (ctx) ctx.drawImage(srcCanvas, 0, 0);
+      const url = (out || srcCanvas).toDataURL('image/png');
       this.triggerDownload(url, `vektor-${this.timestamp()}.png`);
     } catch (e) {
       console.error('PNG export failed', e);
@@ -537,9 +572,22 @@ class VektorApp {
   }
 
   private exportJPG() {
-    const canvas = this.app.canvas as HTMLCanvasElement;
     try {
-      const url = canvas.toDataURL('image/jpeg', 0.92);
+      const renderer = (this.app as any).renderer;
+      renderer.render(this.app.stage);
+      const ex = renderer?.extract;
+      let srcCanvas: HTMLCanvasElement = ex?.canvas ? ex.canvas(this.app.stage) : (this.app.canvas as HTMLCanvasElement);
+      // Composite onto white to avoid black background in JPEG
+      const out = document.createElement('canvas');
+      out.width = srcCanvas.width;
+      out.height = srcCanvas.height;
+      const ctx = out.getContext('2d');
+      if (ctx) {
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, out.width, out.height);
+        ctx.drawImage(srcCanvas, 0, 0);
+      }
+      const url = (out || srcCanvas).toDataURL('image/jpeg', 0.92);
       this.triggerDownload(url, `vektor-${this.timestamp()}.jpg`);
     } catch (e) {
       console.error('JPG export failed', e);
