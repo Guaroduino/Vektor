@@ -14,9 +14,10 @@ PIXI.extensions.add(PIXI.EventSystem);
  */
 class VektorApp {
   // VKTOR: ¡CAMBIO 2! - Usamos InstanceType para TODOS los tipos de Pixi
-  private app: InstanceType<typeof PIXI.Application>;
-  private sceneContainer: InstanceType<typeof PIXI.Container>;
-  private brushLayer: InstanceType<typeof PIXI.Graphics>;
+  // Relaxed types to avoid incompatible Pixi namespace typings in this setup
+  private app: any;
+  private sceneContainer: any;
+  private brushLayer: any;
 
   private isDrawing = false;
   private prevPoint: number[] | null = null; // [x, y, pressure]
@@ -27,9 +28,10 @@ class VektorApp {
   private simulatePressure: boolean = true;
 
   constructor() {
-    this.app = new PIXI.Application();
-    this.sceneContainer = new PIXI.Container();
-    this.brushLayer = new PIXI.Graphics();
+  this.app = new PIXI.Application();
+  // Use a cast to `any` when constructing Pixi classes to avoid TS typing mismatches
+  this.sceneContainer = new (PIXI as any).Container();
+  this.brushLayer = new (PIXI as any).Graphics();
     this.setup();
   }
 
@@ -102,13 +104,13 @@ class VektorApp {
 
   // --- Manejadores de Eventos (Hilo Principal) ---
 
-  private handlePointerDown = (event: InstanceType<typeof PIXI.FederatedPointerEvent>) => {
+  private handlePointerDown = (event: any) => {
     this.isDrawing = true;
     this.brushLayer.clear();
     this.prevPoint = this.getPointData(event);
   };
 
-  private handlePointerMove = (event: InstanceType<typeof PIXI.FederatedPointerEvent>) => {
+  private handlePointerMove = (event: any) => {
     if (!this.isDrawing) return;
 
     const nativeEv = event.nativeEvent as MouseEvent | PointerEvent;
@@ -191,7 +193,7 @@ class VektorApp {
   /**
    * Helper para extraer y normalizar datos del puntero.
    */
-  private getPointData = (event: InstanceType<typeof PIXI.FederatedPointerEvent> | PointerEvent | MouseEvent): number[] => {
+  private getPointData = (event: any /* FederatedPointerEvent | PointerEvent | MouseEvent */): number[] => {
     let x: number, y: number;
     let pressure: number;
 

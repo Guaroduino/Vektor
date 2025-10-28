@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "build:docs": "npm run build",
+    "deploy": "npm run build && git add docs -A && git commit -m \"chore: update docs for GitHub Pages\" || echo \"no changes to commit\" && git push",
     "preview": "vite preview"
   },
   "devDependencies": {
