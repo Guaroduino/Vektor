@@ -129,6 +129,38 @@ export class MeshManager {
     geomAny.getIndex().update();
   }
 
+  // Append prebuilt geometry from a worker. Arrays must be clip-space positions and RGBA colors per vertex.
+  // positions: Float32Array of length N*2; colors: Float32Array of length N*4; indices: Uint16Array of length M
+  appendGeometry(positions: Float32Array, colors: Float32Array, indices: Uint16Array) {
+    if (!positions.length || !indices.length) return;
+    const addVerts = positions.length; // number of floats, not vertices
+    const addColors = colors.length;
+    const addIndices = indices.length;
+
+    const extraSegments = (addIndices / 6) | 0;
+    this.ensureCapacity(extraSegments);
+
+    // base vertex index in terms of vertex-count (each vertex = 2 floats in pos)
+    const baseVertex = (this.vertCount / 2) | 0;
+
+    // Copy positions/colors into the big buffers
+    this.posBuffer.set(positions, this.vertCount);
+    this.colorBuffer.set(colors, this.colorCount);
+    // Rebase incoming indices by baseVertex
+    for (let i = 0; i < addIndices; i++) {
+      this.indexBuffer[this.indexCount + i] = baseVertex + indices[i];
+    }
+
+    this.vertCount += addVerts;
+    this.colorCount += addColors;
+    this.indexCount += addIndices;
+
+    const geomAny = this.geometry as any;
+    geomAny.getAttribute('aPosition').buffer.update();
+    geomAny.getAttribute('aColor').buffer.update();
+    geomAny.getIndex().update();
+  }
+
   clear() {
     this.vertCount = 0;
     this.colorCount = 0;
@@ -138,6 +170,15 @@ export class MeshManager {
     geomAny.getAttribute('aPosition').buffer.update();
     geomAny.getAttribute('aColor').buffer.update();
     geomAny.getIndex().update();
+  }
+
+  setBlendMode(mode: 'add' | 'normal' | 'multiply') {
+    if (!this.mesh?.state) return;
+    this.mesh.state.blendMode = mode;
+  }
+
+  setVisible(visible: boolean) {
+    if (this.mesh) (this.mesh as any).visible = !!visible;
   }
 
   saveToObject() {

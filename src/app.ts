@@ -11,26 +11,30 @@ import {
 import './style.css';
 
 import { vertexSrc, fragmentSrc } from './shaders';
-import { getPointData, calculatePerpendicular } from './input';
+import { getPointData } from './input';
 import { MeshManager } from './mesh';
 import { setupControls as wireControls } from './controls';
+import ToolManager from './core/ToolManager';
+import { VectorPencilTool } from './tools/vectorPencil';
+import { RasterBrushTool } from './tools/rasterBrush';
+import type { ToolParams, ToolPointerEvent, ToolContext } from './core/interfaces';
+import LayerManager from './core/LayerManager';
 
 export class VektorApp {
   private app: Application;
   private sceneContainer: Container;
 
-  private isDrawing = false;
-  private pointHistory: number[][] = [];
-  private prevLeftPoint: [number, number] | null = null;
-  private prevRightPoint: [number, number] | null = null;
-
   private meshShader: InstanceType<typeof Shader>;
+  private layerManager!: LayerManager;
   private meshManager!: MeshManager;
+  private toolManager?: ToolManager;
 
   // Brush params
   public size: number = 16;
   public segmentAlpha: number = 0.1;
   public simulatePressure: boolean = true;
+  public sizeFromSpeed: boolean = false;
+  public speedInfluence: number = 0.5; // 0..1, how much fast speed thins the stroke
   public colorRGB: [number, number, number] = [1, 1, 1];
   public colorHex: string = '#ffffff';
   public bgColorHex: string = '#1a1a1a';
@@ -65,75 +69,110 @@ export class VektorApp {
     this.app.stage.hitArea = this.app.screen;
     this.app.stage.addChild(this.sceneContainer);
 
-    extensions.add(TickerPlugin);
-    extensions.add(EventSystem);
+  extensions.add(TickerPlugin);
+  extensions.add(EventSystem);
 
+  this.layerManager = new LayerManager(this.app, this.sceneContainer, this.meshShader);
+    this.layerManager.init(256);
+    // Ensure we also have a raster layer present (below vector)
+    this.layerManager.ensureRasterLayer();
+    this.meshManager = this.layerManager.getActiveMesh();
+
+    // Initialize ToolManager with default tool (non-invasive placeholder)
+    const makeToolContext = (): ToolContext => ({
+      width: this.app.screen.width,
+      height: this.app.screen.height,
+      toClipSpace: (x: number, y: number) => {
+        // Convert CSS pixel coordinates to clip space (-1..1)
+        const cx = (x / this.app.screen.width) * 2 - 1;
+        const cy = (y / this.app.screen.height) * -2 + 1;
+        return { cx, cy };
+      },
+    });
+    const initialParams: ToolParams = {
+      size: this.size,
+      alpha: this.segmentAlpha,
+      colorRGB: this.colorRGB,
+      blend: 'normal',
+      sizeFromSpeed: this.sizeFromSpeed,
+      speedInfluence: this.speedInfluence,
+    };
+  this.toolManager = new ToolManager(makeToolContext(), initialParams);
+  this.toolManager.register(new VectorPencilTool(this.meshManager, { useWorker: true }));
+  this.toolManager.register(new RasterBrushTool(this.layerManager));
+    this.toolManager.useTool('vector-pencil');
+
+  // Wire UI controls after mesh and (optionally) worker are ready
     wireControls(this);
-
-    this.meshManager = new MeshManager(this.app, this.sceneContainer, this.meshShader);
-    this.meshManager.init(256);
 
     this.app.stage.on('pointerdown', this.handlePointerDown.bind(this));
     this.app.stage.on('pointermove', this.handlePointerMove.bind(this));
     this.app.stage.on('pointerup', this.handlePointerUp.bind(this));
     this.app.stage.on('pointerupoutside', this.handlePointerUp.bind(this));
+
+    // Note: ToolManager context refresh on resize will be introduced when migrating tools
   }
 
   private handlePointerDown = (event: any) => {
-    this.isDrawing = true;
-    this.pointHistory = [];
-    this.prevLeftPoint = null;
-    this.prevRightPoint = null;
-    const firstPoint = getPointData(event);
-    this.pointHistory.push(firstPoint);
+    // Forward to ToolManager
+    this.toolManager?.handlePointer(this.toToolPointer('down', event));
   };
 
   private handlePointerMove = (event: any) => {
-    if (!this.isDrawing) return;
-
-    const nativeEv = event.nativeEvent as MouseEvent | PointerEvent;
-    const coalescedEvents: Array<MouseEvent | PointerEvent> =
-      typeof (nativeEv as any).getCoalescedEvents === 'function'
-        ? ((nativeEv as any).getCoalescedEvents() as Array<PointerEvent>)
-        : [nativeEv];
-
-    for (const e of coalescedEvents) {
-      const curPoint = getPointData(e);
-      this.pointHistory.push(curPoint);
-      if (this.pointHistory.length > 3) this.pointHistory.shift();
-
-      if (this.pointHistory.length >= 2) {
-        const bIndex = this.pointHistory.length - 1;
-        const aIndex = bIndex - 1;
-        const a = this.pointHistory[aIndex];
-        const b = this.pointHistory[bIndex];
-
-        const [px, py] = calculatePerpendicular(this.pointHistory, a, b);
-        const bp = this.simulatePressure ? b[2] ?? 0.5 : 1.0;
-        const bWidth = (this.size * bp) * 0.5;
-        const curL: [number, number] = [b[0] + px * bWidth, b[1] + py * bWidth];
-        const curR: [number, number] = [b[0] - px * bWidth, b[1] - py * bWidth];
-
-        if (this.prevLeftPoint && this.prevRightPoint) {
-          this.meshManager.drawSegment(this.prevLeftPoint, this.prevRightPoint, curL, curR, this.colorRGB, this.segmentAlpha);
-        }
-
-        this.prevLeftPoint = curL;
-        this.prevRightPoint = curR;
-      }
-    }
+    // Forward to ToolManager
+    this.toolManager?.handlePointer(this.toToolPointer('move', event));
   };
 
   private handlePointerUp = () => {
-    if (!this.isDrawing) return;
-    this.isDrawing = false;
-    this.pointHistory = [];
-    this.prevLeftPoint = null;
-    this.prevRightPoint = null;
+    // Forward to ToolManager
+    this.toolManager?.handlePointer({ type: 'up', x: 0, y: 0 });
   };
 
   public clearCanvas() {
-    this.meshManager.clear();
+    // Clear active tool output
+    this.toolManager?.clear();
+  }
+
+  public setBlendMode(mode: 'add' | 'normal' | 'multiply') {
+    // Apply blend to active layer (vector mesh or raster sprite)
+    this.layerManager.setBlendMode(mode);
+  }
+
+  public updateWorkerParams() {
+    // Sync params to ToolManager
+    this.toolManager?.setParams({
+      size: this.size,
+      alpha: this.segmentAlpha,
+      colorRGB: this.colorRGB,
+      sizeFromSpeed: this.sizeFromSpeed,
+      speedInfluence: this.speedInfluence,
+    });
+  }
+
+  // Switch active tool by id from controls
+  public setTool(id: string) {
+    console.log('[App] setTool', id);
+    this.toolManager?.useTool(id);
+    // Push current params to the newly activated tool so it picks up sliders
+    this.updateWorkerParams();
+    // Switch active layer to match tool
+    if (id === 'vector-pencil') this.layerManager.setActiveById('vector-1');
+    if (id === 'raster-brush') this.layerManager.setActiveById('raster-1');
+  }
+
+  // Layer panel helpers
+  public getLayers() {
+    return this.layerManager.list();
+  }
+  public setActiveLayer(id: string, typeHint?: 'vector'|'raster') {
+    console.log('[App] setActiveLayer', id, typeHint);
+    this.layerManager.setActiveById(id);
+    // switch tool to match layer type for coherent UX
+    if (typeHint === 'vector') this.setTool('vector-pencil');
+    else if (typeHint === 'raster') this.setTool('raster-brush');
+  }
+  public setLayerVisible(id: string, visible: boolean) {
+    this.layerManager.setVisible(id, visible);
   }
 
   public saveToFile() {
@@ -220,6 +259,13 @@ export class VektorApp {
 
   private timestamp() {
     return new Date().toISOString().replace(/[:.]/g, '-');
+  }
+
+  private toToolPointer(type: 'down'|'move'|'up'|'cancel', event: any): ToolPointerEvent {
+    const [x, y, p] = getPointData(event);
+    const pressure = this.simulatePressure ? (p ?? 0.5) : 1.0;
+    const t = (event?.nativeEvent as any)?.timeStamp ?? performance.now();
+    return { type, x, y, pressure, timeStamp: t } as any;
   }
 }
 

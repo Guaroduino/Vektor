@@ -6,6 +6,8 @@
 let canvas: OffscreenCanvas | null = null;
 let ctx: OffscreenCanvasRenderingContext2D | null = null;
 let dpr = 1;
+let DEBUG = true;
+function log(msg: string) { try { (self as any).postMessage({ type: 'log', msg: `[RasterWorker] ${msg}` }); } catch {} }
 let prevPoint: { x: number; y: number; p: number } | null = null;
 let brushSize = 16;
 let brushAlpha = 1;
@@ -14,72 +16,46 @@ let brushColor = '#eeeeee';
 function init(off: OffscreenCanvas, w: number, h: number, _dpr: number) {
 	canvas = off;
 	dpr = _dpr || 1;
-	canvas.width = w;
-	canvas.height = h;
+	canvas.width = Math.max(1, Math.round(w * dpr));
+	canvas.height = Math.max(1, Math.round(h * dpr));
 	ctx = canvas.getContext('2d') as OffscreenCanvasRenderingContext2D | null;
 	if (!ctx) return;
 	// Use a clean transform so logical coordinates from the main thread map correctly.
 	ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 	ctx.fillStyle = '#eeeeee';
 	ctx.imageSmoothingEnabled = true;
+  if (DEBUG) log(`initialized w=${w} h=${h} dpr=${dpr}`);
 }
 
 function resize(w: number, h: number, _dpr: number) {
 	if (!canvas || !ctx) return;
 	dpr = _dpr || dpr;
-	canvas.width = w;
-	canvas.height = h;
+	canvas.width = Math.max(1, Math.round(w * dpr));
+	canvas.height = Math.max(1, Math.round(h * dpr));
 	ctx = canvas.getContext('2d') as OffscreenCanvasRenderingContext2D | null;
 	if (!ctx) return;
 	ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+	ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (DEBUG) log(`resized w=${w} h=${h} dpr=${dpr}`);
 }
 
-function drawTrapezoid(a: { x: number; y: number; p: number }, b: { x: number; y: number; p: number }, size = 16) {
+// Simple line-based fallback: draw a round-capped segment between points.
+function drawSegmentLine(a: { x: number; y: number; p: number }, b: { x: number; y: number; p: number }, size = 16) {
 	if (!ctx) return;
 	const ax = a.x, ay = a.y, ap = a.p ?? 0.5;
 	const bx = b.x, by = b.y, bp = b.p ?? 0.5;
-
-	let dx = bx - ax;
-	let dy = by - ay;
-	let dist = Math.hypot(dx, dy);
-	if (dist < 0.001) return;
-
-	const px = -dy / dist;
-	const py = dx / dist;
-
-	const aWidth = (size * ap) * 0.5;
-	const bWidth = (size * bp) * 0.5;
-
-	const x1 = ax + px * aWidth;
-	const y1 = ay + py * aWidth;
-	const x2 = ax - px * aWidth;
-	const y2 = ay - py * aWidth;
-	const x3 = bx - px * bWidth;
-	const y3 = by - py * bWidth;
-	const x4 = bx + px * bWidth;
-	const y4 = by + py * bWidth;
-
-	// Draw two triangles using the OTHER diagonal: (AL, AR, BR) and (AL, BR, BL)
+	const width = size * ((ap + bp) * 0.5);
+	if (width <= 0) return;
 	ctx.save();
 	ctx.globalAlpha = brushAlpha;
-	ctx.fillStyle = brushColor;
-
-	// Triangle 1: AL, AR, BR
+	ctx.strokeStyle = brushColor;
+	ctx.lineCap = 'round';
+	ctx.lineJoin = 'round';
+	ctx.lineWidth = width;
 	ctx.beginPath();
-	ctx.moveTo(x1, y1);
-	ctx.lineTo(x2, y2);
-	ctx.lineTo(x3, y3);
-	ctx.closePath();
-	ctx.fill();
-
-	// Triangle 2: AL, BR, BL
-	ctx.beginPath();
-	ctx.moveTo(x1, y1);
-	ctx.lineTo(x3, y3);
-	ctx.lineTo(x4, y4);
-	ctx.closePath();
-	ctx.fill();
-
+	ctx.moveTo(ax, ay);
+	ctx.lineTo(bx, by);
+	ctx.stroke();
 	ctx.restore();
 }
 
@@ -90,20 +66,22 @@ self.onmessage = (ev: MessageEvent) => {
 	if (data.type === 'init' && data.canvas) {
 		try {
 			init(data.canvas as OffscreenCanvas, data.width || 0, data.height || 0, data.dpr || 1);
-			(self as any).postMessage({ type: 'log', msg: 'initialized' });
+			if (DEBUG) log('init message processed');
 		} catch (e) {
-			(self as any).postMessage({ type: 'log', msg: 'init failed' });
+			if (DEBUG) log('init failed');
 		}
 		return;
 	}
 
 	if (data.type === 'resize') {
 		resize(data.width || 0, data.height || 0, data.dpr || dpr);
+    if (DEBUG) log('resize message processed');
 		return;
 	}
 
 	if (data.type === 'reset') {
 		prevPoint = null;
+    if (DEBUG) log('reset stroke');
 		return;
 	}
 
@@ -114,6 +92,7 @@ self.onmessage = (ev: MessageEvent) => {
 			brushColor = data.color;
 			if (ctx) ctx.fillStyle = brushColor;
 		}
+    if (DEBUG) log(`params size=${brushSize} alpha=${brushAlpha} color=${brushColor}`);
 		return;
 	}
 
@@ -121,14 +100,31 @@ self.onmessage = (ev: MessageEvent) => {
 		// Points are in logical (CSS) coordinates; because we set ctx.setTransform(dpr,0,0,dpr,0,0)
 		// we can draw using those logical coordinates directly.
 		const pts: Array<{ x: number; y: number; p: number; t?: number }> = data.points;
+    if (DEBUG) log(`points x${pts.length}`);
 		for (const pt of pts) {
 			if (!prevPoint) {
 				prevPoint = { x: pt.x, y: pt.y, p: pt.p };
 				continue;
 			}
 			const next = { x: pt.x, y: pt.y, p: pt.p };
-			drawTrapezoid(prevPoint, next, brushSize);
+			drawSegmentLine(prevPoint, next, brushSize);
 			prevPoint = next;
+		}
+		return;
+	}
+
+	if (data.type === 'snapshot') {
+		try {
+			const anyCanvas: any = canvas as any;
+			if (anyCanvas && typeof anyCanvas.transferToImageBitmap === 'function') {
+				const bmp = anyCanvas.transferToImageBitmap();
+				(self as any).postMessage({ type: 'bitmap', image: bmp }, [bmp]);
+				if (DEBUG) log('snapshot sent');
+			} else {
+				if (DEBUG) log('snapshot not supported');
+			}
+		} catch (e) {
+			if (DEBUG) log('snapshot failed');
 		}
 		return;
 	}
