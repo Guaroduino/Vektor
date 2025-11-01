@@ -51,11 +51,10 @@ export function setupControls(host: any) {
     if (!/^#([0-9a-fA-F]{6})$/.test(hex)) return;
     host.bgColorHex = hex.toLowerCase();
     const num = parseInt(hex.slice(1), 16);
-    const rAny = (host.app as any).renderer;
-    if (rAny?.background) rAny.background.color = num;
-    else rAny.backgroundColor = num;
+    const renderer = (host.app as any).renderer;
+    if (renderer?.background) renderer.background.color = num; // Pixi v8 API
     if (bgVal) bgVal.textContent = hex.toUpperCase();
-    if (rAny?.render) rAny.render(host.app.stage);
+    if (renderer?.render) renderer.render(host.app.stage);
   };
   if (bgInput) {
     bgInput.value = host.bgColorHex;

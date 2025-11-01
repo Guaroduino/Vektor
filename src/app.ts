@@ -8,7 +8,6 @@ import {
   TickerPlugin,
   EventSystem,
 } from 'pixi.js';
-import 'pixi.js/mesh';
 import './style.css';
 
 import { vertexSrc, fragmentSrc } from './shaders';
@@ -52,8 +51,8 @@ export class VektorApp {
       resolution: window.devicePixelRatio || 1,
     });
 
-    const canvas = (this.app as any).view ?? (this.app as any).canvas;
-    if (canvas) document.body.appendChild(canvas as HTMLCanvasElement);
+  // En Pixi v8 el canvas público es `app.canvas`
+  document.body.appendChild(this.app.canvas as HTMLCanvasElement);
 
     try {
       if (this.app.canvas instanceof HTMLCanvasElement) {
